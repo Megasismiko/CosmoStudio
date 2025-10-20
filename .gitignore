@@ -1,0 +1,89 @@
+## =========================
+## .gitignore para Visual Studio
+## =========================
+
+# Archivos de usuario y configuración
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Carpetas generadas automáticamente
+bin/
+obj/
+stc/
+
+# Build results
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Tt]emp/
+
+# Visual Studio cache
+.vs/
+*.cache
+*.ide/
+*.sdf
+*.opensdf
+*.dbmdl
+
+# Archivos de publicación
+.publish/
+_PublishedWebsites/
+*.Publish.xml
+*.pubxml
+*.pubxml.user
+
+# Archivos de empaquetado NuGet
+*.nupkg
+*.snupkg
+*.nuspec
+packages/
+*.nuget.props
+*.nuget.targets
+
+# Archivos de compilación temporales
+*.tmp
+*.log
+*.tlog
+*.lastcodeanalysissucceeded
+
+# Archivos generados por herramientas de VS
+*.dll
+*.exe
+*.pdb
+*.cachefile
+*.dbmdl
+*.bak
+*.bak2
+*.orig
+*.config.old
+
+# Archivos de Angular o front-end
+ClientApp/node_modules/
+Client/node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Archivos de publicación IIS / Web
+*.PublishSettings
+App_Data/
+App_Browsers/
+App_Code/
+App_GlobalResources/
+App_LocalResources/
+App_Themes/
+
+# Archivos de configuración locales
+appsettings.*.json
+secrets.json
+
+# Archivos de entorno
+.env
+.env.*
+
+# Archivos del sistema operativo
+Thumbs.db
+ehthumb

@@ -1,0 +1,16 @@
+Invoke-RestMethod -Method Post `
+-Uri http://localhost:5000/api/proyectos `
+-ContentType "application/json" `
+-Body '{"titulo":"Piloto Agujeros Negros","tema":"Agujeros negros y su papel en el universo","origen":"Manual"}'
+
+
+
+
+Invoke-RestMethod -Method POST -Uri "http://localhost:5000/api/guion/2/outline?minutos=60&modelo=qwen2.5:32b-instruct-q4_1"
+
+
+Invoke-RestMethod -Method POST -Uri "http://localhost:5000/api/guion/2/script?minutos=60&modelo=qwen2.5:32b-instruct-q4_1"
+
+
+
+

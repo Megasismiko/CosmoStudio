@@ -16,6 +16,7 @@ namespace CosmoStudio.BLL.Servicios.Interfaces
         /// <param name="ct">Token de cancelación.</param>
         /// <returns>Imagen generada en formato byte[] (PNG por defecto).</returns>
         Task<byte[]> GenerarImagenAsync(
+            long idProyecto,
             string prompt,
             string? negativePrompt = null,
             int width = 1920,
@@ -28,6 +29,6 @@ namespace CosmoStudio.BLL.Servicios.Interfaces
         /// <summary>
         /// Genera una imagen con configuración avanzada (pasos, sampler, hires, etc.).
         /// </summary>
-        Task<byte[]> GenerarImagenAvanzadaAsync(Txt2ImgRequest request, CancellationToken ct = default);
+        Task<byte[]> GenerarImagenAvanzadaAsync(long idProyecto, Txt2ImgRequest request, CancellationToken ct = default);
     }
 }

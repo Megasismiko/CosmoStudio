@@ -1,173 +1,434 @@
-﻿using CosmoStudio.BLL.Ollama;
+﻿using CosmoStudio.BLL.Clientes;
 using CosmoStudio.Common;
+using CosmoStudio.Common.Opciones;
+using CosmoStudio.Common.Requests;
+using CosmoStudio.Common.Responses;
 using Microsoft.Extensions.Options;
 using System.Net.Http.Json;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 
-namespace CosmoStudio.Infraestructura.LLM;
-
-
-
-public class OllamaClient : IOllamaClient
+namespace CosmoStudio.Infraestructura.LLM
 {
-    private readonly HttpClient _http;
-    private readonly OllamaOptions _opt;
-
-    public OllamaClient(HttpClient http, IOptions<OllamaOptions> opt)
+    public sealed class OllamaClient : IOllamaClient
     {
-        _http = http;
-        _opt = opt.Value;
-        
-    }
 
-    public async Task<string> GenerateAsync(string? model, string prompt, bool stream, CancellationToken ct)
-    {
-        var body = new
+        private readonly HttpClient _http;
+        private readonly OllamaOptions _opt;
+
+        private static readonly JsonSerializerOptions _json = new JsonSerializerOptions
         {
-            model = string.IsNullOrWhiteSpace(model) ? _opt.DefaultModel : model,
-            prompt,
-            stream,
-            options = new { 
-                temperature = _opt.Temperature ,
-                num_ctx = 8192,
-                top_p = 0.9,
-                repeat_penalty = 1.1
-            }
+            PropertyNamingPolicy = null
         };
 
-        try
+        // ========== Constructor ==========
+        public OllamaClient(HttpClient http, IOptions<OllamaOptions> opciones)
         {
-            using var resp = await _http.PostAsJsonAsync("/api/generate", body, cancellationToken: ct);
-            resp.EnsureSuccessStatusCode();
-
-            // Cuando stream=false, la respuesta trae { "response": "..." }
-            var json = await resp.Content.ReadAsStringAsync(ct);
-
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.TryGetProperty("response", out var responseProp))
-                return responseProp.GetString() ?? string.Empty;
-
-            // Fallback por si Ollama cambia el shape
-            return json;
+            _http = http;
+            _opt = opciones.Value;
         }
-        catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
+
+        // ========== Métodos base (bajo nivel) ==========
+
+        public async Task<string> GenerarTextoAsync(OllamaGenerateRequest solicitud, CancellationToken ct = default)
         {
-            // Timeout (ya hay reintentos por Polly; esto es el mensaje final)
-            throw new TimeoutException("La solicitud a Ollama ha superado el tiempo de espera.", ex);
+            // POST directo a /api/generate (modo no streaming)
+            using var response = await _http.PostAsJsonAsync("/api/generate", solicitud, _json, ct);
+            response.EnsureSuccessStatusCode();
+
+            // Deserializamos la respuesta JSON completa
+            var json = await response.Content.ReadAsStringAsync(ct);
+
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<OllamaGenerateResponse>(json, _json);
+                if (parsed is not null && !string.IsNullOrEmpty(parsed.Response))
+                    return parsed.Response.Trim();
+            }
+            catch
+            {
+                // si no se puede deserializar, devolvemos el raw
+            }
+
+            return json.Trim();
         }
-        catch (HttpRequestException ex)
+
+     
+        // ========== Alto nivel: Outline ==========
+
+        public async Task<string> GenerarTituloOutlineAsync(string tema, OllamaScriptGenRequest opciones, CancellationToken ct = default)
         {
-            throw new InvalidOperationException("No se pudo contactar con Ollama en local. Verifica que el servicio esté en http://localhost:11434 y que el modelo esté cargado.", ex);
+            // Selección de modelo y parámetros base
+            var modelo = SeleccionarModelo(opciones);
+            var (numPredict, numCtx, numBatch) = Tuning(opciones);
+
+            // Construimos el prompt
+            var prompt = BuildPromptTituloOutline(tema, opciones);
+
+            // Creamos la solicitud completa
+            var req = new OllamaGenerateRequest
+            {
+                Model = modelo,
+                Prompt = prompt,
+                Stream = false,
+                KeepAlive = 600,
+                Options = new OllamaOptionsBlock
+                {
+                    NumPredict = numPredict,
+                    NumCtx = numCtx,
+                    NumBatch = numBatch,
+                    Temperature = _opt.Temperature,
+                    TopP = 0.9,
+                    TopK = 40,
+                    RepeatPenalty = 1.1
+                }
+            };
+
+            // Llamada directa y limpieza del resultado
+            var texto = await GenerarTextoAsync(req, ct);
+            return texto.Trim();
         }
+
+        public async Task<IReadOnlyList<string>> GenerarOutlineAsync(string tema, OllamaScriptGenRequest opciones, CancellationToken ct = default)
+        {
+            // Genera el outline completo de una vez (lista de secciones)
+            var modelo = SeleccionarModelo(opciones);
+            var (numPredict, numCtx, numBatch) = Tuning(opciones);
+            var prompt = BuildPromptOutline(tema, opciones);
+
+            var req = new OllamaGenerateRequest
+            {
+                Model = modelo,
+                Prompt = prompt,
+                Stream = false,
+                KeepAlive = 600,
+                Options = new OllamaOptionsBlock
+                {
+                    NumPredict = numPredict,
+                    NumCtx = numCtx,
+                    NumBatch = numBatch,
+                    Temperature = _opt.Temperature,
+                    TopP = 0.9,
+                    TopK = 40,
+                    RepeatPenalty = 1.1
+                }
+            };
+
+            var texto = await GenerarTextoAsync(req, ct);
+
+            // Parseamos el resultado a una lista de secciones
+            // Ejemplo esperado: "1) Introducción\n2) Qué son los agujeros negros..."
+            var lineas = texto.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                              .Select(l => l.Trim())
+                              .Where(l => !string.IsNullOrWhiteSpace(l))
+                              .ToList();
+
+            return lineas;
+        }
+
+        public async Task<string> GenerarSeccionOutlineAsync(string tema, int indice, int total, OllamaScriptGenRequest opciones, CancellationToken ct = default)
+        {
+            var modelo = SeleccionarModelo(opciones);
+            var (numPredict, numCtx, numBatch) = Tuning(opciones);
+            var prompt = BuildPromptSeccionOutline(tema, indice, total, opciones);
+
+            var req = new OllamaGenerateRequest
+            {
+                Model = modelo,
+                Prompt = prompt,
+                Stream = false,
+                KeepAlive = 600,
+                Options = new OllamaOptionsBlock
+                {
+                    NumPredict = numPredict,
+                    NumCtx = numCtx,
+                    NumBatch = numBatch,
+                    Temperature = _opt.Temperature,
+                    TopP = 0.9,
+                    TopK = 40,
+                    RepeatPenalty = 1.1
+                }
+            };
+
+            var texto = await GenerarTextoAsync(req, ct);
+            return texto.Trim();
+        }
+
+
+        // ========== Alto nivel: Guion por secciones ==========   
+        public async Task<string> GenerarSeccionGuionAsync(string tituloSeccion, IReadOnlyList<string> bullets, int palabrasObjetivo, OllamaScriptGenRequest opciones, CancellationToken ct = default)
+        {
+            // Elegimos modelo y parámetros según modo (borrador/producción)
+            var modelo = SeleccionarModelo(opciones);
+            var (numPredict, numCtx, numBatch) = Tuning(opciones);
+
+            // Creamos el prompt detallado
+            var prompt = BuildPromptSeccionGuion(tituloSeccion, bullets, palabrasObjetivo, opciones);
+
+            // Request completo
+            var req = new OllamaGenerateRequest
+            {
+                Model = modelo,
+                Prompt = prompt,
+                Stream = false,
+                KeepAlive = 600,
+                Options = new OllamaOptionsBlock
+                {
+                    NumPredict = numPredict,
+                    NumCtx = numCtx,
+                    NumBatch = numBatch,
+                    Temperature = _opt.Temperature,
+                    TopP = 0.9,
+                    TopK = 40,
+                    RepeatPenalty = 1.1
+                }
+            };
+
+            // Generamos el texto
+            var texto = await GenerarTextoAsync(req, ct);
+            return texto.Trim();
+        }
+
+        // ========== Alto nivel: Prompts de imagen ==========
+        public async Task<string> GenerarPromptImagenDesdeSeccionAsync(string textoSeccion, CancellationToken ct = default)
+        {
+            // Modelo y prompt específico
+            var modelo = _opt.DefaultModelDraft ?? "llama3.1:8b-instruct";
+            var prompt = BuildPromptImagenDesdeSeccion(textoSeccion);
+
+            var req = new OllamaGenerateRequest
+            {
+                Model = modelo,
+                Prompt = prompt,
+                Stream = false,
+                KeepAlive = 600,
+                Options = new OllamaOptionsBlock
+                {
+                    NumPredict = 400,
+                    NumCtx = 1024,
+                    NumBatch = 16,
+                    Temperature = 0.6,
+                    TopP = 0.9,
+                    TopK = 40,
+                    RepeatPenalty = 1.1
+                }
+            };
+
+            var texto = await GenerarTextoAsync(req, ct);
+            return texto.Trim();
+        }
+
+        // ========== Alto nivel: Revisión/Corrección de guion ==========
+        public async Task<string> RevisarYCorregirGuionAsync(string guionMarkdown, string tema, CancellationToken ct = default)
+        {
+            var modelo = _opt.DefaultModel ?? "llama3.1:8b-instruct";
+            var prompt = BuildPromptRevisionGuion(guionMarkdown, tema);
+
+            var req = new OllamaGenerateRequest
+            {
+                Model = modelo,
+                Prompt = prompt,
+                Stream = false,
+                KeepAlive = 600,
+                Options = new OllamaOptionsBlock
+                {
+                    NumPredict = 2400,
+                    NumCtx = 2048,
+                    NumBatch = 32,
+                    Temperature = 0.5,
+                    TopP = 0.9,
+                    TopK = 40,
+                    RepeatPenalty = 1.1
+                }
+            };
+
+            var texto = await GenerarTextoAsync(req, ct);
+            return texto.Trim();
+        }
+
+        // ========== Alto nivel: traducir==========
+        public async Task<string> TraducirAsync(string textoOrigen, string a = "Spanish (es-ES)", bool produccion = true, CancellationToken ct = default)
+        {            
+            var modelo = (produccion ? _opt.DefaultModel : _opt.DefaultModelDraft);
+
+            var req = new OllamaGenerateRequest
+            {
+                Model = modelo,
+                Prompt = BuildPromptTraducir(textoOrigen, a),
+                Stream = false,
+                KeepAlive = 600,
+                Options = new OllamaOptionsBlock
+                {
+                    NumPredict = 2400,
+                    NumCtx = 2048,
+                    NumBatch = 32,
+                    Temperature = 0.3, // más fiel
+                    TopP = 0.9,
+                    TopK = 40,
+                    RepeatPenalty = 1.1
+                }
+            };
+
+            var texto = await GenerarTextoAsync(req, ct);
+            return texto.Trim();
+        }
+
+        // ========== Helpers privados ==========
+        private string SeleccionarModelo(OllamaScriptGenRequest req)
+        {
+            // Si hay modos diferenciados, usa uno rápido para borradores y otro potente para producción.
+            return req.Mode == OllamaMode.Borrador
+                ? _opt.DefaultModelDraft ?? _opt.DefaultModel
+                : _opt.DefaultModel;
+        }
+
+        private (int numPredict, int numCtx, int numBatch) Tuning(OllamaScriptGenRequest req)
+        {
+            // Ajustamos tokens generables según modo y longitud objetivo del guion.
+            return req.Mode == OllamaMode.Borrador
+                ? (numPredict: 220, numCtx: 1024, numBatch: 16)
+                : (numPredict: 2400, numCtx: 2048, numBatch: 32);
+        }
+
+
+        // Construcción de prompts (outline, sección, imagen, revisión). Los iremos creando después.
+        // TÍTULO (ahora en inglés)
+        private string BuildPromptTituloOutline(string tema, OllamaScriptGenRequest req)
+        {
+            return $@"
+You are a professional documentary writer for science communication.
+Create a short, intriguing English title for a YouTube science episode.
+
+Topic: {tema}
+
+Rules:
+- Natural, cinematic tone
+- Max 12 words
+- Output ONLY the title.";
+        }
+
+        // OUTLINE COMPLETO (en inglés)
+        private string BuildPromptOutline(string tema, OllamaScriptGenRequest req)
+        {
+            var total = Math.Max(5, req.Secciones);
+            return $@"
+You are an expert script planner for educational science videos.
+Write a numbered outline in English with {total} sections about:
+
+Topic: {tema}
+
+Each section must have:
+- a short, descriptive title (one line)
+- three concise bullet points
+
+Output format:
+1) Section title
+- idea 1
+- idea 2
+- idea 3
+
+2) Section title
+- idea 1
+- idea 2
+- idea 3";
+        }
+
+        // SECCIÓN DEL OUTLINE (en inglés)
+        private string BuildPromptSeccionOutline(string tema, int indice, int total, OllamaScriptGenRequest req)
+        {
+            return $@"
+You are creating part {indice} of {total} of an English outline for a science documentary.
+General topic: {tema}
+
+Write a section title and three concise bullet points.
+Format:
+{indice}) [Section title]
+- idea 1
+- idea 2
+- idea 3";
+        }
+
+        // SECCIÓN DE GUIÓN (en inglés)
+        private string BuildPromptSeccionGuion(string titulo, IReadOnlyList<string> bullets, int palabrasObjetivo, OllamaScriptGenRequest req)
+        {
+            var points = string.Join("\n- ", bullets);
+            var mode = req.Mode == OllamaMode.Borrador ? "draft" : "production";
+
+            return $@"
+You are writing an English voiceover script for a science video.
+Mode: {mode}
+Section title: {titulo}
+
+Guidelines:
+- Natural, cinematic narration in English
+- Around {palabrasObjetivo} words
+- Flowing paragraphs (no lists)
+- Insert '(short pause)' where a change of idea happens
+- Avoid hype; be clear and precise
+
+Key points:
+- {points}";
+        }
+        private string BuildPromptRevisionGuion(string guionMarkdown, string tema)
+        {
+            return $@"
+You are an expert Spanish editor reviewing a science documentary script.
+The topic is: {tema}
+
+Tasks:
+- Detect and correct characters or words from other languages.
+- Fix grammatical or typographical errors.
+- Remove meaningless or out-of-context phrases.
+- Preserve the original structure and '(pausa breve)' markers.
+
+Return the corrected script in Markdown, without additional commentary.
+
+Script to review:
+### START OF SCRIPT ###
+{guionMarkdown}
+### END OF SCRIPT ###";
+        }
+        private string BuildPromptImagenDesdeSeccion(string textoSeccion)
+        {
+            return $@"
+You are a professional prompt engineer for Stable Diffusion XL.
+
+Your task is to read the following Spanish text, which comes from a narrated science video section, 
+and generate an English visual description suitable for creating a photorealistic image.
+
+Focus only on **visual and physical elements** — avoid abstract ideas, emotions, or narration.
+Use rich descriptive keywords related to **space, physics, astronomy, technology, or nature**.
+Do not include text overlays or people talking.
+
+Output rules:
+- Write a single English sentence (max 60 words).
+- Use commas to separate key concepts.
+- Add photographic style modifiers (e.g., 'ultra realistic, detailed lighting, volumetric light, cinematic composition, 4k').
+- Do NOT include quotation marks, commentary, or prefixes like 'Prompt:'.
+
+Spanish source text:
+###
+{textoSeccion}
+###";
+        }
+        private string BuildPromptTraducir(string sourceText, string targetLang)
+        {
+            return $@"
+You are a professional literary translator specialized in voiceover scripts.
+Translate the following text into {targetLang} with natural, fluent phrasing suitable for narration.
+Preserve meaning and tone. Avoid literal calques. Keep markers like '(short pause)' or '(pausa breve)' if present.
+
+Text to translate:
+### START ###
+{sourceText}
+### END ###
+
+Output: only the translated text.";
+        }
+
+
     }
-
-    public Task<string> GenerateOutlineAsync(string tema, ScriptGenOptions opt, CancellationToken ct)
-    {
-        var model = string.IsNullOrWhiteSpace(opt.Modelo) ? _opt.DefaultModel : opt.Modelo!;
-        var prompt = BuildOutlinePrompt(tema, opt);
-        return GenerateAsync(model, prompt, stream: false, ct);
-    }
-
-    public Task<string> GenerateScriptFromOutlineAsync(string outline, ScriptGenOptions opt, CancellationToken ct)
-    {
-        var model = string.IsNullOrWhiteSpace(opt.Modelo) ? _opt.DefaultModel : opt.Modelo!;
-        var prompt = BuildScriptPromptFromOutline(outline, opt);
-        return GenerateAsync(model, prompt, stream: false, ct);
-    }
-
-    public Task<string> GenerateSectionAsync(string sectionTitle, IReadOnlyList<string> bullets, int targetWords, ScriptGenOptions opt, CancellationToken ct)
-    {
-        var model = string.IsNullOrWhiteSpace(opt.Modelo) ? _opt.DefaultModel : opt.Modelo!;
-        var prompt = BuildSectionPrompt(sectionTitle, bullets, targetWords, opt);
-        return GenerateAsync(model, prompt, stream: false, ct);
-    }
-
-  
-    // ---------- Prompt builders ----------
-    private static string BuildOutlinePrompt(string tema, ScriptGenOptions opt)
-    {
-        // calcula secciones por modo
-        var secciones = opt.Mode == ScriptMode.Produccion ? Math.Max(opt.Secciones, 40) : Math.Max(opt.Secciones, 10);
-        var minutos = Math.Max(opt.MinutosObjetivo, 10);
-        var estilo = string.IsNullOrWhiteSpace(opt.Estilo) ? "tono calmado y divulgativo" : opt.Estilo;
-
-        var sb = new StringBuilder();
-        sb.AppendLine($"Genera un OUTLINE muy detallado en español, {estilo}.");
-        sb.AppendLine($"Tema: \"{tema}\"");
-        sb.AppendLine($"Duración objetivo: ~{minutos} minutos.");
-        sb.AppendLine();
-        sb.AppendLine("Requisitos:");
-        sb.AppendLine($"- Divide en {secciones} secciones numeradas (1..{secciones}), de ~{minutos / secciones:0} minutos cada una.");
-        sb.AppendLine("- Cada sección debe tener un título y 2-3 bullets con subtemas (no guion completo aún).");
-        sb.AppendLine("- Progresión lógica: introducción, desarrollo, ejemplos/metáforas, cierre.");
-        sb.AppendLine("- Sé coherente y evita saltos temáticos.");
-        sb.AppendLine();
-        sb.AppendLine("Formato EXACTO:");
-        sb.AppendLine("Título del episodio");
-        sb.AppendLine();
-        sb.AppendLine("1) Título de sección");
-        sb.AppendLine("- punto 1");
-        sb.AppendLine("- punto 2");
-        sb.AppendLine("- punto 3");
-        sb.AppendLine("2) Título de sección");
-        sb.AppendLine("- ...");
-        sb.AppendLine("...");
-        sb.AppendLine();
-        sb.AppendLine("Cierra con 5-8 FUENTES divulgativas.");
-
-        return sb.ToString();
-    }
-
-    private static string BuildScriptPromptFromOutline(string outline, ScriptGenOptions opt)
-    {
-        var minutos = Math.Max(opt.MinutosObjetivo, 10);
-        var wpm = Math.Clamp(opt.PalabrasPorMinuto, 90, 180);
-        var targetWords = minutos * wpm;
-        var parrafos = opt.Mode == ScriptMode.Produccion ? Math.Max(opt.ParrafosPorSeccion, 2) : Math.Max(opt.ParrafosPorSeccion, 1);
-        var estilo = string.IsNullOrWhiteSpace(opt.Estilo) ? "tono calmado, claro, pausado" : opt.Estilo;
-
-        return $@"
-A partir del OUTLINE proporcionado, escribe el GUIÓN COMPLETO en español, {estilo}.
-Duración objetivo: ~{minutos} minutos (~{targetWords} palabras aprox).
-
-OUTLINE:
-<<OUTLINE>>
-{outline}
-<<FIN OUTLINE>>
-
-Reglas:
-- Genera {parrafos} párrafos por sección, con frases suaves y transiciones.
-- Inserta marcas de tiempo aproximadas [mm:00] cada minuto.
-- Añade (pausa breve) donde convenga para respiración del oyente.
-- Evita tecnicismos innecesarios; explica con metáforas cuando ayude.
-- Cierra con resumen y despedida muy suave.
-";
-    }
-
-    private static string BuildSectionPrompt(string title, IReadOnlyList<string> bullets, int targetWords, ScriptGenOptions opt)
-    {
-        var bulletsText = string.Join(Environment.NewLine, bullets.Select(b => $"- {b}"));
-        var estilo = string.IsNullOrWhiteSpace(opt.Estilo) ? "tono calmado, claro y pausado (para dormir)" : opt.Estilo;
-
-        return $@"
-Escribe la sección titulada: ""{title}"" en español, {estilo}.
-Objetivo: ~{targetWords} palabras (no menos de {(int)(targetWords * 0.9)}).
-Usa 2–3 párrafos con transiciones suaves. Inserta (pausa breve) donde convenga.
-
-Puntos a cubrir:
-{bulletsText}
-
-Reglas:
-- Explica con metáforas sencillas cuando ayude.
-- Evita tecnicismos innecesarios; si aparecen, explícalos.
-- Mantén coherencia con una narración relajada (estilo documental).
-- No introduzcas temas fuera de los bullets.
-- No repitas texto de otras secciones.
-
-Devuelve SOLO el texto de la sección, sin títulos adicionales ni secciones nuevas.
-";
-    }
-
 }
+
 

@@ -1,6 +1,8 @@
-﻿using CosmoStudio.BLL.Ollama;
+﻿using System.Diagnostics;
 using CosmoStudio.BLL.Servicios.Interfaces;
 using CosmoStudio.Common;
+using CosmoStudio.Common.Interfaces;
+using CosmoStudio.Common.Requests;
 using Microsoft.AspNetCore.Mvc;
 
 [ApiController]
@@ -8,76 +10,76 @@ using Microsoft.AspNetCore.Mvc;
 public class GuionController : ControllerBase
 {
     private readonly IGuionServicio _svc;
-    public GuionController(IGuionServicio svc) => _svc = svc;
+    private readonly IScriptGenOptionsProvider _profiles;
 
+    public GuionController(IGuionServicio svc, IScriptGenOptionsProvider profiles)
+    {
+        _svc = svc;
+        _profiles = profiles;
+    }
+
+    // Genera el outline (esquema) de un proyecto.
     [HttpPost("{idProyecto:long}/outline")]
     public async Task<IActionResult> GenerarOutline(
-        long idProyecto, 
-        [FromQuery] string mode = "borrador",
-        [FromQuery] int minutos = 60, 
-        [FromQuery] string? modelo = null, 
-        CancellationToken ct = default
-    )
+        long idProyecto,
+        [FromQuery] OllamaMode mode = OllamaMode.Borrador,       
+        CancellationToken ct = default)
     {
-        var opt = BuildOptions(mode, minutos, modelo);
+        var sw = Stopwatch.StartNew();
+
+        var opt = BuildOptionsFromProfile(mode);
         var (path, _) = await _svc.GenerarOutlineAsync(idProyecto, opt, ct);
-        return Ok(new { ok = true, outlinePath = path, mode = opt.Mode.ToString() });
+
+        sw.Stop();
+        var elapsedMs = sw.ElapsedMilliseconds;
+
+        return Ok(new
+        {
+            ok = true,
+            outlinePath = path,
+            mode = opt.Mode.ToString(),
+            minutos = opt.MinutosObjetivo,
+            elapsedMs
+        });
     }
 
+    // Genera el guion por secciones a partir del outline existente.
     [HttpPost("{idProyecto:long}/script")]
-    public async Task<IActionResult> GenerarGuion(
-        long idProyecto, 
-        [FromQuery] string mode = "borrador",
-        [FromQuery] int minutos = 60, 
-        [FromQuery] string? modelo = null, 
-        CancellationToken ct = default
-    )
-    {
-        var opt = BuildOptions(mode, minutos, modelo);
-        var (path, _) = await _svc.GenerarGuionDesdeOutlineAsync(idProyecto, opt, ct);
-        return Ok(new { ok = true, scriptPath = path, mode = opt.Mode.ToString() });
-    }
-
-    [HttpPost("{idProyecto:long}/script-by-sections")]
     public async Task<IActionResult> GenerarGuionPorSecciones(
         long idProyecto,
-        [FromQuery] string mode = "produccion",
-        [FromQuery] int minutos = 60,
-        [FromQuery] string? modelo = null,
-        CancellationToken ct = default
-    )
+        [FromQuery] OllamaMode mode = OllamaMode.Borrador  ,    
+        CancellationToken ct = default)
     {
-        var opt = BuildOptions(mode, minutos, modelo); // el mismo helper que ya tienes
-        var (path, _) = await _svc.GenerarGuionDesdeOutlinePorSeccionesAsync(idProyecto, opt, ct);
-        return Ok(new { ok = true, scriptPath = path, mode = opt.Mode.ToString() });
+        var sw = Stopwatch.StartNew();
+
+        var opt = BuildOptionsFromProfile(mode);
+        var (path, _) = await _svc.GenerarGuionDesdeOutlineAsync(idProyecto, opt, ct);
+
+        sw.Stop();
+        var elapsedMs = sw.ElapsedMilliseconds;
+
+        return Ok(new
+        {
+            ok = true,
+            scriptPath = path,
+            mode = opt.Mode.ToString(),
+            minutos = opt.MinutosObjetivo,
+            elapsedMs
+        });
     }
 
-    private static ScriptGenOptions BuildOptions(string mode, int minutos, string? modelo)
+    // ---- helpers ----
+
+    private OllamaScriptGenRequest BuildOptionsFromProfile(OllamaMode mode)
     {
-        var m = (mode ?? "borrador").Trim().ToLowerInvariant();
-        if (m is "prod" or "produccion")
+        var baseProfile = _profiles.Get(mode);
+
+        return new OllamaScriptGenRequest
         {
-            return new ScriptGenOptions
-            {
-                Mode = ScriptMode.Produccion,
-                MinutosObjetivo = minutos,
-                Secciones = 50,
-                ParrafosPorSeccion = 2,
-                PalabrasPorMinuto = 120,
-                Modelo = modelo,
-                Estilo = "tono calmado, estilo documental, para dormir"
-            };
-        }
-        return new ScriptGenOptions
-        {
-            Mode = ScriptMode.Borrador,
-            MinutosObjetivo = minutos,
-            Secciones = 10,
-            ParrafosPorSeccion = 1,
-            PalabrasPorMinuto = 120,
-            Modelo = modelo,
-            Estilo = "tono calmado, resumen conciso"
+            Mode = baseProfile.Mode,
+            MinutosObjetivo = baseProfile.MinutosObjetivo,
+            Secciones = baseProfile.Secciones,          
+            PalabrasPorMinuto = baseProfile.PalabrasPorMinuto          
         };
     }
-
 }

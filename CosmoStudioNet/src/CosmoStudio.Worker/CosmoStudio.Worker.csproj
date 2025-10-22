@@ -14,6 +14,5 @@
   <ItemGroup>
     <ProjectReference Include="..\CosmoStudio.BLL\CosmoStudio.BLL.csproj" />
     <ProjectReference Include="..\CosmoStudio.Common\CosmoStudio.Common.csproj" />
-    <ProjectReference Include="..\CosmoStudio.DTO\CosmoStudio.DTO.csproj" />
   </ItemGroup>
 </Project>

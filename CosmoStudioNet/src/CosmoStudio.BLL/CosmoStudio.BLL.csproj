@@ -8,7 +8,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\CosmoStudio.Common\CosmoStudio.Common.csproj" />
-    <ProjectReference Include="..\CosmoStudio.DTO\CosmoStudio.DTO.csproj" />
     <ProjectReference Include="..\CosmoStudio.Infraestructura.DAL\CosmoStudio.Infraestructura.DAL.csproj" />
     <ProjectReference Include="..\CosmoStudio.Model\CosmoStudio.Model.csproj" />
   </ItemGroup>

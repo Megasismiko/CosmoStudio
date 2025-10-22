@@ -37,5 +37,5 @@ public partial class TareaRender
     public virtual Proyecto IdProyectoNavigation { get; set; } = null!;
 
     [InverseProperty(nameof(Log.IdTareaRenderNavigation))]
-    public virtual ICollection<Log> Logs { get; set; } = [];
+    public virtual ICollection<Log> Logs { get; set; } = new List<Log>();
 }

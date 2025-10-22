@@ -1,0 +1,4 @@
+dotnet ef dbcontext scaffold "Server=.\SQLEXPRESS;Database=CosmoStudio;Trusted_Connection=True;TrustServerCertificate=True;" Microsoft.EntityFrameworkCore.SqlServer --project .\src\CosmoStudio.Model --context CosmoDbContext  --data-annotations --force
+
+
+dotnet ef dbcontext scaffold "Server=.;Database=CosmoStudio;Trusted_Connection=True;TrustServerCertificate=True"  Microsoft.EntityFrameworkCore.SqlServer   --context CosmoDbContext    --context-dir Context   --schema dbo  --use-database-names   --no-onconfiguring   --force

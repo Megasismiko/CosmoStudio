@@ -14,6 +14,13 @@ public class RecursoRepositorio : IRecursoRepositorio
         _db = db;
     }
 
+    public Task<Recurso?> GetByIdAsync(long idRecurso, CancellationToken ct) =>
+         _db.Recursos
+            .Where(r => r.Id == idRecurso)
+            .AsNoTracking()
+            .FirstOrDefaultAsync();
+   
+
     public Task<List<Recurso>> ListarPorProyectoAsync(long idProyecto, CancellationToken ct) =>
         _db.Recursos
             .Where(r => r.IdProyecto == idProyecto)
@@ -28,15 +35,36 @@ public class RecursoRepositorio : IRecursoRepositorio
             .AsNoTracking()
             .ToListAsync(ct);
 
+    public Task<List<Recurso>> ListarPorGuionAsync(long idGuion, CancellationToken ct) =>
+        _db.Recursos.AsNoTracking()
+           .Where(r => r.IdGuion == idGuion)
+           .OrderByDescending(r => r.FechaCreacion)
+           .ToListAsync(ct);
+
+    public Task<List<Recurso>> ListarPorGuionYTipoAsync(long idGuion, string tipo, CancellationToken ct) =>
+        _db.Recursos.AsNoTracking()
+           .Where(r => r.IdGuion == idGuion && r.Tipo == tipo)
+           .OrderByDescending(r => r.FechaCreacion)
+           .ToListAsync(ct);
+
+
     public async Task AgregarAsync(Recurso recurso, CancellationToken ct) =>
         await _db.Recursos.AddAsync(recurso, ct);
 
-    public async Task EliminarAsync(long id, CancellationToken ct)
+    public async Task<bool> TryEliminarAsync(long id, CancellationToken ct)
     {
-        var entidad = await _db.Recursos.FirstOrDefaultAsync(r => r.Id == id, ct);
-        if (entidad is not null)
-            _db.Recursos.Remove(entidad);
-    }
+        var refEnVersion = await _db.GuionVersiones
+            .AnyAsync(v => v.OutlineRecursoId == id || v.ScriptRecursoId == id, ct);
+        var refEnImgs = await _db.GuionImagenes.AnyAsync(i => i.IdImagenRecurso == id, ct);
+        var refEnAud = await _db.GuionAudios.AnyAsync(a => a.IdAudioRecurso == id, ct);
+        if (refEnVersion || refEnImgs || refEnAud) return false;
 
+        var entidad = await _db.Recursos.FirstOrDefaultAsync(r => r.Id == id, ct);
+        if (entidad is null) return true;
+        _db.Recursos.Remove(entidad);
+        return true;
+    }
     public Task GuardarCambiosAsync(CancellationToken ct) => _db.SaveChangesAsync(ct);
+
+  
 }

@@ -5,14 +5,14 @@ using Microsoft.AspNetCore.Mvc;
 [Route("api/voz")]
 public class VozController : ControllerBase
 {
-    private readonly IVozServicio _voz;
+    private readonly IAudioServicio _voz;
 
-    public VozController(IVozServicio voz) => _voz = voz;
+    public VozController(IAudioServicio voz) => _voz = voz;
 
     [HttpPost("{idProyecto:long}")]
     public async Task<IActionResult> GenerarAudio(long idProyecto, CancellationToken ct)
     {
-        var idRecurso = await _voz.GenerarAudioProyectoAsync(idProyecto, ct);
+        var idRecurso = await _voz.GenerarVozDesdeGuionAsync(idProyecto, ct);
         return Ok(new { RecursoId = idRecurso });
     }
 }

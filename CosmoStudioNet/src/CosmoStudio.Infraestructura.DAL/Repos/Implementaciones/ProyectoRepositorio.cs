@@ -5,8 +5,6 @@ using Microsoft.EntityFrameworkCore;
 
 namespace CosmoStudio.Infraestructura.DAL.Repos.Implementaciones;
 
-
-
 public class ProyectoRepositorio : IProyectoRepositorio
 {
     private readonly CosmoDbContext _db;
@@ -15,11 +13,15 @@ public class ProyectoRepositorio : IProyectoRepositorio
 
     public Task<Proyecto?> ObtenerPorIdAsync(long id, CancellationToken ct) =>
         _db.Proyectos
-           .Include(p => p.Guion)
-           .Include(p => p.TareasRender)
-           .AsNoTracking()
-           .FirstOrDefaultAsync(p => p.Id == id, ct);
-
+            .Include(p => p.Guion)
+                .ThenInclude(g => g.CurrentVersion)
+                .ThenInclude(v => v.ScriptRecurso)
+            .Include(p => p.Guion)
+                .ThenInclude(g => g.CurrentVersion)
+                .ThenInclude(v => v.OutlineRecurso)
+            .Include(p => p.TareasRender)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == id, ct);
     public Task<List<Proyecto>> ListarUltimosAsync(int top, CancellationToken ct) =>
         _db.Proyectos.AsNoTracking()
            .OrderByDescending(p => p.FechaCreacion)

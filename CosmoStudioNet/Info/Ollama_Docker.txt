@@ -1,0 +1,4 @@
+
+#Crear contenedor ollama con variables de entorno optimizadas
+
+docker run -d --name ollama   --gpus all   -p 11434:11434   -v ollama:/root/.ollama   -e OLLAMA_NUM_PARALLEL=8   -e OLLAMA_MAX_QUEUE=32   -e OLLAMA_KEEP_ALIVE=600   -e OLLAMA_HOST=0.0.0.0:11434   --restart unless-stopped   ollama/ollama:latest

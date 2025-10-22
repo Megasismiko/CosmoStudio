@@ -5,17 +5,18 @@ using Microsoft.EntityFrameworkCore;
 
 namespace CosmoStudio.Infraestructura.DAL.Repos.Implementaciones;
 
-public class GuionRepositorio : IGuionRepositorio
+public class GuionRepositorio(CosmoDbContext db) : IGuionRepositorio
 {
-    private readonly CosmoDbContext _db;
-
-    public GuionRepositorio(CosmoDbContext db)
-    {
-        _db = db;
-    }
+    private readonly CosmoDbContext _db = db;
 
     public Task<Guion?> ObtenerPorProyectoAsync(long idProyecto, CancellationToken ct) =>
-        _db.Guiones.AsNoTracking().FirstOrDefaultAsync(g => g.IdProyecto == idProyecto, ct);
+      _db.Guiones
+         .AsNoTracking()
+         .Include(g => g.CurrentVersion)
+             .ThenInclude(v => v.ScriptRecurso)
+         .Include(g => g.CurrentVersion)
+             .ThenInclude(v => v.OutlineRecurso)
+         .FirstOrDefaultAsync(g => g.IdProyecto == idProyecto, ct);
 
     public async Task CrearAsync(Guion guion, CancellationToken ct) =>
         await _db.Guiones.AddAsync(guion, ct);

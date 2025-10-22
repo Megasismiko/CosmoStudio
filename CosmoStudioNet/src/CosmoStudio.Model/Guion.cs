@@ -1,8 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
-using Microsoft.EntityFrameworkCore;
 
 namespace CosmoStudio.Model;
 
@@ -14,15 +12,21 @@ public partial class Guion
 
     public long IdProyecto { get; set; }
 
-    [StringLength(500)]
-    public string RutaOutline { get; set; } = null!;
+    public long? CurrentVersionId { get; set; }
 
-    [StringLength(500)]
-    public string RutaCompleto { get; set; } = null!;
+    public DateTime FechaCreacion { get; set; }
 
-    public int Version { get; set; }
+    [ForeignKey("CurrentVersionId")]
+    [InverseProperty(nameof(GuionVersion.Guiones))]
+    public virtual GuionVersion? CurrentVersion { get; set; }
+
+    [InverseProperty(nameof(GuionVersion.IdGuionNavigation))]
+    public virtual ICollection<GuionVersion> GuionVersiones { get; set; } = [];
 
     [ForeignKey("IdProyecto")]
     [InverseProperty(nameof(Proyecto.Guion))]
     public virtual Proyecto IdProyectoNavigation { get; set; } = null!;
+
+    [InverseProperty(nameof(Recurso.IdGuionNavigation))]
+    public virtual ICollection<Recurso> Recursos { get; set; } = [];
 }

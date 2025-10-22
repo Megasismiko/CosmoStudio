@@ -1,220 +1,210 @@
-﻿using CosmoStudio.BLL.Ollama;
+﻿using CosmoStudio.BLL.Clientes;
+
 using CosmoStudio.BLL.Servicios.Interfaces;
 using CosmoStudio.Common;
+using CosmoStudio.Common.Requests;
 using CosmoStudio.Infraestructura.DAL.Repos.Interfaces;
 using CosmoStudio.Model;
-using Microsoft.Extensions.Options;
+using System.Text;
 
-
-namespace CosmoStudio.BLL.Servicios.Implementaciones;
-
-public class GuionServicio : IGuionServicio
+namespace CosmoStudio.BLL.Servicios.Implementaciones
 {
-    private readonly IGuionRepositorio _repo;
-    private readonly IProyectoRepositorio _proyectos;
-    private readonly IOllamaClient _llm;
-    private readonly IFileStorage _files;
-    private readonly StorageOptions _storage;
-
-    public GuionServicio(
-        IGuionRepositorio repo,
-        IProyectoRepositorio proyectos,
-        IOllamaClient llm,
-        IFileStorage files,
-        IOptions<StorageOptions> storage
-    )
+    public class GuionServicio : IGuionServicio
     {
-        _repo = repo;
-        _proyectos = proyectos;
-        _llm = llm;
-        _files = files;
-        _storage = storage.Value;
-    }
+        private readonly IGuionRepositorio _guiones;
+        private readonly IGuionVersionRepositorio _versiones;
+        private readonly IRecursoServicio _recursos;
+        private readonly IProyectoRepositorio _proyectos;
+        private readonly IOllamaClient _ollama;
+        private readonly ILocalFileStorage _fileStorage;
 
-    public Task<Guion?> ObtenerPorProyectoAsync(long idProyecto, CancellationToken ct) =>
-        _repo.ObtenerPorProyectoAsync(idProyecto, ct);
-
-    public async Task<Guion> GuardarRutasAsync(long idProyecto, string rutaOutline, string rutaCompleto, int version, CancellationToken ct)
-    {
-        var proyecto = await _proyectos.ObtenerPorIdAsync(idProyecto, ct)
-            ?? throw new InvalidOperationException("Proyecto no encontrado");
-
-        var existente = await _repo.ObtenerPorProyectoAsync(idProyecto, ct);
-        if (existente is null)
+        public GuionServicio(
+            IGuionRepositorio guiones,
+            IGuionVersionRepositorio versiones,
+            IRecursoServicio recursos,
+            IProyectoRepositorio proyectos,
+            IOllamaClient ollama,
+            ILocalFileStorage fileStorage)
         {
-            var g = new Guion
+            _guiones = guiones;
+            _versiones = versiones;
+            _recursos = recursos;
+            _proyectos = proyectos;
+            _ollama = ollama;
+            _fileStorage = fileStorage;
+        }
+
+        public Task<Guion?> ObtenerPorProyectoAsync(long idProyecto, CancellationToken ct) =>
+            _guiones.ObtenerPorProyectoAsync(idProyecto, ct);
+
+        public async Task<bool> EliminarPorProyectoAsync(long idProyecto, CancellationToken ct)
+        {
+            await _guiones.EliminarPorProyectoAsync(idProyecto, ct);
+            await _guiones.GuardarCambiosAsync(ct);
+            return true;
+        }
+
+        // =============================================================
+        // ========== GENERACIÓN DE OUTLINE ============================
+        // =============================================================
+
+        public async Task<(string ruta, string texto)> GenerarOutlineAsync(long idProyecto, OllamaScriptGenRequest opciones, CancellationToken ct)
+        {
+            var proyecto = await _proyectos.ObtenerPorIdAsync(idProyecto, ct)
+                ?? throw new InvalidOperationException("Proyecto no encontrado");
+
+            // Asegurar guion existente
+            var guion = await _guiones.ObtenerPorProyectoAsync(idProyecto, ct);
+            if (guion is null)
             {
-                IdProyecto = proyecto.Id,
-                RutaOutline = rutaOutline,
-                RutaCompleto = rutaCompleto,
-                Version = version <= 0 ? 1 : version
-            };
-            await _repo.CrearAsync(g, ct);
-            await _repo.GuardarCambiosAsync(ct);
-            return g;
-        }
-        else
-        {
-            existente.RutaOutline = rutaOutline;
-            existente.RutaCompleto = rutaCompleto;
-            existente.Version = version <= 0 ? existente.Version : version;
-            await _repo.ActualizarAsync(existente, ct);
-            await _repo.GuardarCambiosAsync(ct);
-            return existente;
-        }
-    }
-
-    public async Task<bool> EliminarPorProyectoAsync(long idProyecto, CancellationToken ct)
-    {
-        await _repo.EliminarPorProyectoAsync(idProyecto, ct);
-        await _repo.GuardarCambiosAsync(ct);
-        return true;
-    }
-
-    public async Task<(string outlinePath, string outline)> GenerarOutlineAsync(long idProyecto, ScriptGenOptions opt, CancellationToken ct)
-    {
-        var proyecto = await _proyectos.ObtenerPorIdAsync(idProyecto, ct)
-            ?? throw new InvalidOperationException("Proyecto no encontrado");
-
-        var outline = await _llm.GenerateOutlineAsync(proyecto.Tema, opt, ct);
-
-        var runDir =  Path.Combine(_storage.RunsRoot, idProyecto.ToString());
-        await _files.EnsureDirectoryAsync(runDir, ct);
-        var outlinePath = Path.Combine(runDir, "script_outline.md");
-        await _files.WriteAllTextAsync(outlinePath, outline, ct);
-
-        var g = await _repo.ObtenerPorProyectoAsync(proyecto.Id, ct);
-        if (g is null)
-            await GuardarRutasAsync(proyecto.Id, outlinePath, "", 1, ct);
-        else
-            await GuardarRutasAsync(proyecto.Id, outlinePath, g.RutaCompleto, g.Version + 1, ct);
-
-        return (outlinePath, outline);
-    }
-
-    public async Task<(string scriptPath, string script)> GenerarGuionDesdeOutlineAsync(long idProyecto, ScriptGenOptions opt, CancellationToken ct)
-    {
-        var proyecto = await _proyectos.ObtenerPorIdAsync(idProyecto, ct)
-            ?? throw new InvalidOperationException("Proyecto no encontrado");
-
-        var g = await _repo.ObtenerPorProyectoAsync(proyecto.Id, ct)
-            ?? throw new InvalidOperationException("No existe outline para este proyecto");
-
-        var outline = await File.ReadAllTextAsync(g.RutaOutline, ct);
-        var script = await _llm.GenerateScriptFromOutlineAsync(outline, opt, ct);
-
-        var runDir = Path.Combine(_storage.RunsRoot, idProyecto.ToString());
-        var scriptPath = Path.Combine(runDir, "script_full.md");
-        await _files.WriteAllTextAsync(scriptPath, script, ct);
-
-        await GuardarRutasAsync(proyecto.Id, g.RutaOutline, scriptPath, g.Version + 1, ct);
-        return (scriptPath, script);
-    }
-
-
-    public async Task<(string scriptPath, string script)> GenerarGuionDesdeOutlinePorSeccionesAsync(
-    long idProyecto, ScriptGenOptions opt, CancellationToken ct)
-    {
-        var proyecto = await _proyectos.ObtenerPorIdAsync(idProyecto, ct)
-            ?? throw new InvalidOperationException("Proyecto no encontrado");
-
-        var g = await _repo.ObtenerPorProyectoAsync(proyecto.Id, ct)
-            ?? throw new InvalidOperationException("No existe outline para este proyecto");
-
-        var outline = await File.ReadAllTextAsync(g.RutaOutline, ct);
-
-        // 1) Parsear secciones del outline
-        var sections = ParseOutline(outline); // ver método abajo
-        if (sections.Count == 0) throw new InvalidOperationException("Outline sin secciones parseables");
-
-        // 2) Calcular objetivo por sección
-        var wpm = Math.Clamp(opt.PalabrasPorMinuto, 90, 180);
-        var totalWords = opt.MinutosObjetivo * wpm;
-        var wordsPerSection = Math.Max(120, totalWords / Math.Max(1, sections.Count));
-
-        // 3) Escribir incrementalmente
-        var runDir = Path.Combine(_storage.RunsRoot, idProyecto.ToString());
-        Directory.CreateDirectory(runDir);
-        var scriptPath = Path.Combine(runDir, "script_full.md");
-        var fs = new FileStream(scriptPath, FileMode.Create, FileAccess.Write, FileShare.Read);
-        await using var sw = new StreamWriter(fs);
-
-        await sw.WriteLineAsync($"# {proyecto.Titulo}");
-        await sw.WriteLineAsync();
-
-        var minuto = 0;
-        foreach (var s in sections)
-        {
-            ct.ThrowIfCancellationRequested();
-            var texto = await _llm.GenerateSectionAsync(s.Title, s.Bullets, wordsPerSection, opt, ct);
-
-            // Marca de tiempo aproximada por sección (opcional)
-            await sw.WriteLineAsync($"## {s.Title}  —  ~[{minuto:00}:00]");
-            await sw.WriteLineAsync(texto.Trim());
-            await sw.WriteLineAsync();
-            minuto += Math.Max(1, opt.MinutosObjetivo / Math.Max(1, sections.Count));
-        }
-
-        await sw.FlushAsync();
-        await sw.DisposeAsync();
-
-        // 4) Guardar ruta en BD
-        await GuardarRutasAsync(proyecto.Id, g.RutaOutline, scriptPath, g.Version + 1, ct);
-
-        var final = await ReadAllTextWithRetryAsync(scriptPath);
-        return (scriptPath, final);
-    }
-
-
-    static async Task<string> ReadAllTextWithRetryAsync(string path, int retries = 3, int delayMs = 150)
-    {
-        for (int i = 0; i <= retries; i++)
-        {
-            try
-            {
-                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                using var sr = new StreamReader(fs);
-                return await sr.ReadToEndAsync();
+                guion = new Guion { IdProyecto = idProyecto, FechaCreacion = DateTime.UtcNow };
+                await _guiones.CrearAsync(guion, ct);
+                await _guiones.GuardarCambiosAsync(ct);
             }
-            catch (IOException) when (i < retries)
+
+            // Calcular próxima versión
+            var versiones = await _versiones.ListarPorGuionAsync(guion.Id, ct);
+            var numeroVersion = (versiones.FirstOrDefault()?.NumeroVersion ?? 0) + 1;
+
+            // Generar título
+            var titulo = (await _ollama.GenerarTituloOutlineAsync(proyecto.Tema, opciones, ct)).Trim();
+
+            // Generar secciones del outline
+            var total = opciones.Mode == OllamaMode.Produccion
+                ? Math.Max(opciones.Secciones, 50)
+                : Math.Max(opciones.Secciones, 10);
+
+            var secciones = new List<string>();
+            for (int i = 1; i <= total; i++)
             {
-                await Task.Delay(delayMs);
+                ct.ThrowIfCancellationRequested();
+                var seccion = await _ollama.GenerarSeccionOutlineAsync(proyecto.Tema, i, total, opciones, ct);
+                secciones.Add(seccion.Trim());
             }
+
+            // Ensamblar texto final
+            var sb = new StringBuilder();
+            sb.AppendLine(titulo).AppendLine();
+            foreach (var s in secciones)
+                sb.AppendLine(s).AppendLine();
+            sb.AppendLine("Fuentes sugeridas:")
+              .AppendLine("- ").AppendLine("- ").AppendLine("- ");
+
+            var outlineTexto = sb.ToString();
+
+            // Guardar en disco
+            var outlinePath = await _fileStorage.SaveTextAsync(
+                idProyecto: idProyecto,
+                version: numeroVersion,
+                tipo: TipoRecurso.Outline,
+                content: outlineTexto,
+                extension: "md",
+                index: null,
+                ct: ct);
+
+            // Registrar recurso y versión
+            var outlineRec = await _recursos.AgregarAsync(idProyecto, TipoRecurso.Outline, outlinePath, metaJson: null, ct);
+            var version = await _versiones.CrearAsync(guion.Id, numeroVersion, outlineRec.Id, null, "auto: outline", ct);
+            await _versiones.GuardarCambiosAsync(ct);
+            await _versiones.EstablecerComoVigenteAsync(guion.Id, version.Id, ct);
+            await _versiones.GuardarCambiosAsync(ct);
+
+            return (outlinePath, outlineTexto);
         }
-        // último intento sin capturar para ver el error real
-        using var fs2 = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-        using var sr2 = new StreamReader(fs2);
-        return await sr2.ReadToEndAsync();
-    }
-    // --- Parser simple de outline ---
-    private static List<(string Title, List<string> Bullets)> ParseOutline(string outline)
-    {
-        var result = new List<(string, List<string>)>();
-        var lines = outline.Split('\n').Select(l => l.Trim()).ToList();
 
-        string? currentTitle = null;
-        var currentBullets = new List<string>();
+        // =============================================================
+        // ========== GENERACIÓN DE GUION ==============================
+        // =============================================================
 
-        foreach (var line in lines)
+        public async Task<(string ruta, string texto)> GenerarGuionDesdeOutlineAsync(long idProyecto, OllamaScriptGenRequest opciones, CancellationToken ct)
         {
-            // detecta "1) Título", "12) Título", o "1. Título"
-            if (System.Text.RegularExpressions.Regex.IsMatch(line, @"^\d+[\)\.]\s"))
-            {
-                if (currentTitle != null)
-                    result.Add((currentTitle, new List<string>(currentBullets)));
+            var proyecto = await _proyectos.ObtenerPorIdAsync(idProyecto, ct)
+                ?? throw new InvalidOperationException("Proyecto no encontrado");
 
-                currentTitle = System.Text.RegularExpressions.Regex.Replace(line, @"^\d+[\)\.]\s*", "");
-                currentBullets.Clear();
-            }
-            else if (line.StartsWith("- "))
+            var guion = await _guiones.ObtenerPorProyectoAsync(proyecto.Id, ct)
+                ?? throw new InvalidOperationException("No existe guion para este proyecto");
+
+            var version = guion.CurrentVersion ?? throw new InvalidOperationException("No hay versión vigente del guion.");
+
+            var outlinePath = version.OutlineRecurso?.StoragePath
+                ?? throw new InvalidOperationException("La versión vigente no tiene Outline asociado.");
+
+            var outline = await File.ReadAllTextAsync(outlinePath, ct);
+            var secciones = ParsearOutline(outline);
+            if (secciones.Count == 0)
+                throw new InvalidOperationException("Outline sin secciones parseables");
+
+            // Calcular palabras por sección
+            var wpm = Math.Clamp(opciones.PalabrasPorMinuto, 90, 180);
+            var totalPalabras = opciones.MinutosObjetivo * wpm;
+            var palabrasPorSeccion = Math.Max(120, totalPalabras / Math.Max(1, secciones.Count));
+
+            // Construcción del script
+            var sb = new StringBuilder();
+            sb.AppendLine($"# {proyecto.Titulo}").AppendLine();
+
+            var minuto = 0;
+            foreach (var s in secciones)
             {
-                currentBullets.Add(line.Substring(2));
+                ct.ThrowIfCancellationRequested();
+                var texto = await _ollama.GenerarSeccionGuionAsync(s.Titulo, s.Puntos, palabrasPorSeccion, opciones, ct);
+                sb.AppendLine($"## {s.Titulo}  —  ~[{minuto:00}:00]");
+                sb.AppendLine(texto.Trim()).AppendLine();
+                minuto += Math.Max(1, opciones.MinutosObjetivo / Math.Max(1, secciones.Count));
             }
+
+            var scriptTexto = sb.ToString();
+
+            // Guardar script
+            var scriptPath = await _fileStorage.SaveTextAsync(
+                idProyecto: idProyecto,
+                version: version.NumeroVersion,
+                tipo: TipoRecurso.Script,
+                content: scriptTexto,
+                extension: "md",
+                index: null,
+                ct: ct);
+
+            // Registrar recurso y vincularlo a la versión vigente
+            var scriptRec = await _recursos.AgregarAsync(idProyecto, TipoRecurso.Script, scriptPath, metaJson: null, ct);
+            await _versiones.SetScriptAsync(version.Id, scriptRec.Id, ct);
+            await _versiones.GuardarCambiosAsync(ct);
+
+            return (scriptPath, scriptTexto);
         }
-        if (currentTitle != null)
-            result.Add((currentTitle, currentBullets));
 
-        return result;
+        // =============================================================
+        // ========== PARSER DE OUTLINE ================================
+        // =============================================================
+
+        private static List<(string Titulo, List<string> Puntos)> ParsearOutline(string outline)
+        {
+            var resultado = new List<(string, List<string>)>();
+            var lineas = outline.Split('\n').Select(l => l.Trim()).ToList();
+
+            string? tituloActual = null;
+            var bulletsActuales = new List<string>();
+
+            foreach (var linea in lineas)
+            {
+                if (System.Text.RegularExpressions.Regex.IsMatch(linea, @"^\d+[\)\.]\s"))
+                {
+                    if (tituloActual != null)
+                        resultado.Add((tituloActual, new List<string>(bulletsActuales)));
+
+                    tituloActual = System.Text.RegularExpressions.Regex.Replace(linea, @"^\d+[\)\.]\s*", "");
+                    bulletsActuales.Clear();
+                }
+                else if (linea.StartsWith("- "))
+                {
+                    bulletsActuales.Add(linea.Substring(2));
+                }
+            }
+
+            if (tituloActual != null)
+                resultado.Add((tituloActual, bulletsActuales));
+
+            return resultado;
+        }
     }
-
 }

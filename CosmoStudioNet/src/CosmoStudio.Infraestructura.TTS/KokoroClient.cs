@@ -1,5 +1,6 @@
-﻿using CosmoStudio.BLL.Kokoro;
-using CosmoStudio.Common;
+﻿using CosmoStudio.BLL.Clientes;
+using CosmoStudio.Common.Opciones;
+using CosmoStudio.Common.Requests;
 using Microsoft.Extensions.Options;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -31,8 +32,8 @@ namespace CosmoStudio.Infraestructura.TTS
         {
             var req = new KokoroSpeechRequest(
                  model: _opt.Model,
-                 input: text,
-                 voice: _opt.Voice,
+                 input: text,                
+                 voice: _opt.Voice.Select(v => new KokoroVoiceMix(v.Name, v.Weight)),
                  response_format: _opt.Format,
                  speed: _opt.Speed
              );
